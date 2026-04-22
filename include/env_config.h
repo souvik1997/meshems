@@ -5,7 +5,7 @@
 
 #define WIFI_SSID "Port Labs Members"
 #define WIFI_PASSWORD "lesstalkmorewifi"
-#define MQTT_SERVER "192.168.95.28"
+#define MQTT_SERVER "192.168.95.83"
 #define MQTT_PORT 1883
 #define MQTT_CLIENT_ID "EMS_DEV"
 #define MQTT_USERNAME ""

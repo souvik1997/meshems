@@ -20,7 +20,7 @@
 #define MQTT_PUBLISH_INTERVAL   3000                       //< MQTT publish interval in milliseconds (30 seconds)
 
 // MQTT Broker Settings
-#define MQTT_SERVER             "192.168.94.177"    //< MQTT broker hostname
+#define MQTT_SERVER             "192.168.95.83"     //< MQTT broker hostname
 #define MQTT_USER               "mqttuser"                    //< MQTT broker username
 #define MQTT_PW                 "sunspec2025"                    //< MQTT broker password
 
