@@ -6,6 +6,7 @@
 #include "SH1106Ui.h"
 #include "images.h"
 #include "rick.h"
+#include "penguin.h"
 
 void loop_display();
 SH1106Ui* setup_display();
@@ -27,5 +28,6 @@ void drawBitmap(int x, int y, int width, int height, const char *bitmap);
 void drawRect(int x, int y, int width, int height);
 void display_set_rssi(const char* rssi);
 SH1106Ui* getUI();
+void drawPenguinDanceFrame();
 
 #endif

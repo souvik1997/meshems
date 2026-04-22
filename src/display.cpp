@@ -162,17 +162,48 @@ bool drawFrame4(SH1106 *display, SH1106UiState* state, int x, int y) {
 bool drawConsoleFrame(SH1106 *display, SH1106UiState* state, int x, int y) {
   display->clear();
   display->setTextAlignment(TEXT_ALIGN_LEFT);
-  display->setFont(ArialMT_Plain_10);  
+  display->setFont(ArialMT_Plain_10);
   _console.redrawConsoleFrame(display);
   return false;
 }
 
+// Dancing penguin animation state
+static uint8_t penguin_dance_step = 0;
+static unsigned long penguin_last_frame_ms = 0;
+#define PENGUIN_FRAME_DELAY_MS 250
+
+bool drawPenguinFrame(SH1106 *display, SH1106UiState* state, int x, int y) {
+  unsigned long now = millis();
+  if (now - penguin_last_frame_ms >= PENGUIN_FRAME_DELAY_MS) {
+    penguin_last_frame_ms = now;
+    penguin_dance_step = (penguin_dance_step + 1) % PENGUIN_DANCE_LENGTH;
+  }
+
+  uint8_t frame_idx = penguin_dance_sequence[penguin_dance_step];
+  const char* frame = (const char*)pgm_read_ptr(&penguin_frames[frame_idx]);
+
+  display->clear();
+  // Center the 32x48 penguin on the 128x64 screen
+  display->drawXbm(48 + x, 8 + y, PENGUIN_WIDTH, PENGUIN_HEIGHT, frame);
+
+  // Label at the bottom
+  display->setTextAlignment(TEXT_ALIGN_CENTER);
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(64 + x, 54 + y, "~ dance dance ~");
+
+  return true; // request continuous redraw
+}
+
+void drawPenguinDanceFrame() {
+  penguin_dance_step = 0;
+  penguin_last_frame_ms = 0;
+}
+
 // how many frames are there?
-int frameCount = 1;
+int frameCount = 2;
 // this array keeps function pointers to all frames
 // frames are the single views that slide from right to left
-//bool (*frames[])(SH1106 *display, SH1106UiState* state, int x, int y) = { drawThermostatFrame, drawEnergyFrame2, drawEnergyFrame3, drawEnergyFrame4}; //, drawFrame2, drawFrame3, drawFrame4 };
-bool (*frames[])(SH1106 *display, SH1106UiState* state, int x, int y) = {drawConsoleFrame};//drawFrame3, drawFrame4 };
+bool (*frames[])(SH1106 *display, SH1106UiState* state, int x, int y) = {drawPenguinFrame, drawConsoleFrame};
 //bool (*frames[])(SH1106 *display, SH1106UiState* state, int x, int y) = { drawEnergyFrame3, drawEnergyFrame4}; //, drawFrame2, drawFrame3, drawFrame4 };
 //bool (*frames[])(SH1106 *display, SH1106UiState* state, int x, int y) = { drawConsoleFrame , drawThermostatFrame, drawEnergyFrame, drawEnergyFrame2, drawEnergyFrame3}; //, drawFrame2, drawFrame3, drawFrame4 };
 
