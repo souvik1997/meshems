@@ -179,9 +179,12 @@ void update_sunspec_from_solark() {
     holdingRegisters[inverter_offset + INV_DER_MODE] = (derMode >> 16) & 0xFFFF;
     holdingRegisters[inverter_offset + INV_DER_MODE + 1] = derMode & 0xFFFF;
     
-    // Set power measurements
-    holdingRegisters[inverter_offset + INV_AC_POWER] = solark.getInverterPower();
-    holdingRegisters[inverter_offset + INV_AC_VA] = solark.getInverterPower();  // Approximation
+    // Set power measurements -- report total PV (DC) production so downstream
+    // consumers (e.g. EVerest's energy manager) see solar availability,
+    // not the hybrid inverter's near-zero AC terminal when PV is feeding the battery.
+    uint16_t pv_power_w = solark.getPV1Power() + solark.getPV2Power();
+    holdingRegisters[inverter_offset + INV_AC_POWER] = pv_power_w;
+    holdingRegisters[inverter_offset + INV_AC_VA] = pv_power_w;
     holdingRegisters[inverter_offset + INV_AC_VAR] = 0;  // Not available
     holdingRegisters[inverter_offset + INV_AC_PF] = 100;  // Assuming power factor of 1.0 (scaled by 100)
     
