@@ -51,6 +51,32 @@ String topic_cmd;             // command topic (for 'southbound' commands)
 // Function prototype for mqtt_publish_json
 void mqtt_publish_json(const char* subtopic, const JsonDocument* payload);
 
+// --- EVSE Command Queue (deferred execution from MQTT callback) ---
+struct PendingCmd {
+  char     cmd[16];
+  uint16_t reg;
+  uint16_t value;
+};
+
+#define CMD_QUEUE_SIZE 4
+static PendingCmd cmd_queue[CMD_QUEUE_SIZE];
+static uint8_t cmd_queue_head = 0;
+static uint8_t cmd_queue_tail = 0;
+
+static bool enqueue_cmd(const char* cmd, uint16_t reg = 0, uint16_t value = 0) {
+  uint8_t next_head = (cmd_queue_head + 1) % CMD_QUEUE_SIZE;
+  if (next_head == cmd_queue_tail) {
+    Serial.println("MQTT CMD: queue full, dropping command");
+    return false;
+  }
+  strncpy(cmd_queue[cmd_queue_head].cmd, cmd, sizeof(cmd_queue[cmd_queue_head].cmd) - 1);
+  cmd_queue[cmd_queue_head].cmd[sizeof(cmd_queue[cmd_queue_head].cmd) - 1] = '\0';
+  cmd_queue[cmd_queue_head].reg = reg;
+  cmd_queue[cmd_queue_head].value = value;
+  cmd_queue_head = next_head;
+  return true;
+}
+
 void generateTopics() {
   //the top-level device topic string, eg: OPENAMI_<streetpoleEMSid>
   topic_device = MQTT_TOPIC;
@@ -115,54 +141,74 @@ boolean mqtt_connect()
 }
 
 void mqtt_publish_evse_data() {
-  extern Modbus_EVSE evse; // Reference to the global EVSE object
-  
-  StaticJsonDocument<1024> jsonDoc;
-  
-  // Add timestamp
+  StaticJsonDocument<2048> jsonDoc;
+
   jsonDoc["timestamp"] = millis();
-  
-  // Add the requested EVSE values
-  jsonDoc["remote_start_stop"] = evse.getRemoteStartStop();
+  jsonDoc["poll_success"] = evse_poll_ok;
+
+  // Core status
   jsonDoc["current_status"] = evse.getCurrentStatus();
+  jsonDoc["status_string"] = evse.getStatusString();
+  jsonDoc["is_charging"] = evse.isCharging();
+  jsonDoc["is_connected"] = evse.isConnected();
+  jsonDoc["remote_start_stop"] = evse.getRemoteStartStop();
   jsonDoc["software_version"] = evse.getSoftwareVersion();
-  jsonDoc["current_output_pwm"] = evse.getCurrentOutputPWM();
+
+  // Charging data (regs 147-149)
+  jsonDoc["charging_current"] = evse.getChargingCurrent();
+  jsonDoc["charging_voltage"] = evse.getChargingVoltage();
+  jsonDoc["charging_power"] = evse.getChargingPower();
+
+  // CP signal (regs 153-154)
+  jsonDoc["cp_positive_voltage"] = evse.getCPPositiveVoltage();
+  jsonDoc["cp_negative_voltage"] = evse.getCPNegativeVoltage();
+
+  // PWM (regs 109, 142, 151, 152)
+  jsonDoc["max_output_pwm_duty"] = evse.getMaxOutputPWMDuty();
+  jsonDoc["cable_gauge_pwm"] = evse.getCableGaugePWM();
   jsonDoc["rotary_switch_pwm"] = evse.getRotarySwitchPWM();
+  jsonDoc["current_output_pwm"] = evse.getCurrentOutputPWM();
+
+  // Protection & safety (regs 143-145, 155, 157)
+  jsonDoc["rcmu_status"] = evse.getRCMUStatus();
+  jsonDoc["rfid_status"] = evse.getRFIDStatus();
+  jsonDoc["lock_status"] = evse.getLockStatus();
+  jsonDoc["overcurrent_count"] = evse.getOvercurrentCount();
+  jsonDoc["current_temperature"] = evse.getCurrentTemperature();
+
+  // Meter data (regs 159, 162-165)
+  jsonDoc["meter_a_voltage"] = evse.getMeterAVoltage();
+  jsonDoc["meter_current"] = evse.getMeterCurrent();
+  jsonDoc["meter_total_power"] = evse.getMeterTotalPower();
+  jsonDoc["meter_total_kwh"] = evse.getMeterTotalKWH();
+
+  // Dial settings (regs 128-133)
   jsonDoc["dial_setting_1"] = evse.getDialSetting(1);
   jsonDoc["dial_setting_2"] = evse.getDialSetting(2);
   jsonDoc["dial_setting_3"] = evse.getDialSetting(3);
   jsonDoc["dial_setting_4"] = evse.getDialSetting(4);
   jsonDoc["dial_setting_5"] = evse.getDialSetting(5);
   jsonDoc["dial_setting_6"] = evse.getDialSetting(6);
-  
-  // Add human-readable status
-  jsonDoc["status_string"] = evse.getStatusString();
-  jsonDoc["is_charging"] = evse.isCharging();
-  jsonDoc["is_connected"] = evse.isConnected();
-  
+
   mqtt_publish_json("evse", &jsonDoc);
 }
 
 
 
 void mqtt_publish_json(const char* subtopic, const JsonDocument * payload) {
-    String topicBuf;
     String jsonString;
-    if (measureJson(*payload) >= 1024) {
+    if (measureJson(*payload) >= 2048) {
       Serial.println("MQTT publish: payload too large");
       return;
     }
     serializeJson(*payload, jsonString);
-    // It's annoying to have to set this limit, but maybe a static size is better for performance?
-    char data[1024];
-    jsonString.toCharArray(data, sizeof(data));
-    topicBuf = topic_device;
+    String topicBuf = topic_device;
     topicBuf.concat(subtopic);
-    if (!mqttclient.publish(topicBuf.c_str(), data)) {
+    if (!mqttclient.publish(topicBuf.c_str(), jsonString.c_str())) {
         Serial.println("MQTT publish: failed");
     }
 #ifdef ENABLE_DEBUG_MQTT
-    Serial.printf("topic: %s, data: %s\n", topicBuf.c_str(), data);
+    Serial.printf("topic: %s, data: %s\n", topicBuf.c_str(), jsonString.c_str());
 #endif
 }
 
@@ -199,40 +245,94 @@ void mqtt_publish_comma_sep_colon_delim(const char* subtopic, const char * data)
     } while (*data++ != 0);
 }
 
-// Subscriber callback
-//
-// We're subscribed to the following topics:
-// <top>/<device_id>/cmd
-//
-// 
+// Subscriber callback -- parses JSON commands and enqueues for deferred execution.
+// Commands are executed in process_pending_cmds() called from the main loop.
 void subscriber_callback(char* topic, uint8_t* payload, unsigned int length) {
-  //sanity
   if (length > 254) {
-    Serial.printf("MQTT CALLBACK: not handled: payload len overrun:%d\n", length);
+    Serial.printf("MQTT CALLBACK: payload too large: %d\n", length);
     return;
   }
-  if (strcmp(topic, topic_cmd.c_str()) == 0) {
-    char payload_buf[length+1] = {0};
-    strncpy(payload_buf, (char*)payload, length);
-    payload_buf[length] = '\0'; //ensure null-termination
-    Serial.printf("\n***MQTT CALLBACK: topic '%s', payload '%s'\n", topic, payload_buf);
-    if (strstr(payload_buf, "report") != NULL) {
-      //trigger a data-model dump
-      return;
+  if (strcmp(topic, topic_cmd.c_str()) != 0) {
+    return;
+  }
+
+  char payload_buf[256] = {0};
+  strncpy(payload_buf, (char*)payload, length);
+  payload_buf[length] = '\0';
+  Serial.printf("\nMQTT CMD: topic '%s', payload '%s'\n", topic, payload_buf);
+
+  StaticJsonDocument<256> cmdDoc;
+  DeserializationError err = deserializeJson(cmdDoc, payload_buf);
+  if (err) {
+    Serial.printf("MQTT CMD: JSON parse error: %s\n", err.c_str());
+    return;
+  }
+
+  const char* cmd = cmdDoc["cmd"] | (const char*)nullptr;
+  if (cmd == nullptr) {
+    Serial.println("MQTT CMD: missing 'cmd' field");
+    return;
+  }
+
+  uint16_t reg   = cmdDoc["reg"]   | (uint16_t)0;
+  uint16_t value = cmdDoc["value"] | (uint16_t)0;
+
+  if (strcmp(cmd, "start") == 0 ||
+      strcmp(cmd, "stop") == 0 ||
+      strcmp(cmd, "enable") == 0 ||
+      strcmp(cmd, "disable") == 0 ||
+      strcmp(cmd, "set_pwm") == 0 ||
+      strcmp(cmd, "write_register") == 0) {
+    if (!enqueue_cmd(cmd, reg, value)) {
+      Serial.printf("MQTT CMD: failed to enqueue '%s'\n", cmd);
     }
-    if (strstr(payload_buf, "meter") != NULL) {
-      //control the meter
-      return;
+  } else {
+    Serial.printf("MQTT CMD: unknown command '%s'\n", cmd);
+  }
+}
+
+// Process queued commands -- called from main loop, safe to do Modbus I/O here.
+void process_pending_cmds() {
+  while (cmd_queue_tail != cmd_queue_head) {
+    PendingCmd& pc = cmd_queue[cmd_queue_tail];
+    const char* cmd = pc.cmd;
+    uint8_t result = 0xFF;
+
+    if (strcmp(cmd, "start") == 0 || strcmp(cmd, "enable") == 0) {
+      result = evse.startCharging();
+    } else if (strcmp(cmd, "stop") == 0) {
+      result = evse.stopCharging();
+    } else if (strcmp(cmd, "disable") == 0) {
+      result = evse.stopCharging();
+      evse.setMaxOutputPWMDuty(0);
+    } else if (strcmp(cmd, "set_pwm") == 0) {
+      result = evse.setMaxOutputPWMDuty(pc.value);
+    } else if (strcmp(cmd, "write_register") == 0) {
+      result = evse.write_register(pc.reg, pc.value);
     }
-    if (strstr(payload_buf, "bms") != NULL) {
-      //BMS command
-      return;
-    }
-    if (strstr(payload_buf, "inverter") != NULL) {
-      //inverter command
-      return;
-    }
-    // add new commands here
+
+    // Publish ack
+    StaticJsonDocument<256> ackDoc;
+    ackDoc["cmd"] = cmd;
+    ackDoc["result"] = result;
+    ackDoc["success"] = (result == 0x00);
+    if (pc.reg != 0) ackDoc["reg"] = pc.reg;
+    if (pc.value != 0) ackDoc["value"] = pc.value;
+    ackDoc["timestamp"] = millis();
+    mqtt_publish_json("cmd_ack", &ackDoc);
+
+    Serial.printf("EVSE CMD: '%s' result=0x%02X %s\n",
+                  cmd, result, result == 0 ? "OK" : "FAIL");
+
+    cmd_queue_tail = (cmd_queue_tail + 1) % CMD_QUEUE_SIZE;
+  }
+}
+
+// Fast MQTT loop -- call every main loop iteration for low-latency command processing
+void loop_mqtt_fast() {
+  mqttclient.loop();
+  if (mqttclient.connected()) {
+    process_pending_cmds();
   }
 }
 
@@ -254,20 +354,13 @@ void setup_mqtt_client() {
 }
 
 void loop_mqtt() {
-      // Always call mqttclient.loop() to maintain connection
-      mqttclient.loop();
-      
-      bool mqtt_connected = mqttclient.connected();
-      if (!mqtt_connected) {
-        mqtt_connected = mqtt_connect();
+      // Reconnect if needed
+      if (!mqttclient.connected()) {
+        mqtt_connect();
       }
-      
-      if (mqtt_connected) {  
-        // Publish EVSE data
+
+      if (mqttclient.connected()) {
         mqtt_publish_evse_data();
-        Serial.println("Publishing EVSE data!");
-      } else {
-        Serial.println("MQTT not connected!");
       }
       mqtt_interval_ts = millis();
 }

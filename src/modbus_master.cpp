@@ -39,7 +39,8 @@ void scanModbusDevices(SoftwareSerial &serialPort);
 
  //the EVSE controller
 Modbus_EVSE evse;
- 
+volatile bool evse_poll_ok = false;
+
  // Timing variables
  unsigned long lastMillis, lastEVSEMillis, lastEVSEChargingMillis = 0;
 
@@ -98,17 +99,18 @@ Modbus_EVSE evse;
     if (millis() - lastEVSEMillis > EVSE_POLL_INTERVAL) {
       Serial.println("INFO - Polling EVSE controller");
       uint8_t result = evse.poll();
-      
+      evse_poll_ok = (result == ku8MBSuccess);
+
       if (result == ku8MBSuccess) {
         Serial.println("INFO - EVSE Status: " + String(evse.getStatusString()));
-        
+
         if (evse.isCharging()) {
             Serial.println("INFO - EVSE Charging at " + String(evse.getChargingCurrent()) + "A");
         } else if (evse.isConnected()) {
           Serial.println("EV connected, not charging");
         }
       }
-      
+
       lastEVSEMillis = millis();
     }
   }

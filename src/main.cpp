@@ -94,10 +94,11 @@ void loop() {
     loop_buttons();
     loop_modbus_master();
     loop_modbus_client();
-    
+    loop_mqtt_fast();  // process incoming MQTT messages + pending commands every iteration
+
     if (millis() - mqttlastMillis > MQTT_PUBLISH_INTERVAL) {
         mqttlastMillis = millis();
-        loop_mqtt();
+        loop_mqtt();   // publish telemetry on interval
     }
     loop_display();
     //loop_can();

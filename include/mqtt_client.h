@@ -54,8 +54,10 @@
 // loop function
 // -------------------------------------------------------------------
 void loop_mqtt();
+void loop_mqtt_fast();
 void setup_mqtt_client();
 void subscriber_callback(char* topic, uint8_t* payload, unsigned int length);
+void process_pending_cmds();
 void mqtt_publish_comma_sep_colon_delim(const char* subtopic, const char * data);
 
 // -------------------------------------------------------------------
