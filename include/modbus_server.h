@@ -6,11 +6,11 @@
 // #define WIFI_SSID "SSID"
 // #define WIFI_PASSWORD "PASSWORD"
 
-//#define WIFI_SSID "Port Labs Members"
-//#define WIFI_PASSWORD "lesstalkmorewifi"
+#define WIFI_SSID "Port Labs Members"
+#define WIFI_PASSWORD "lesstalkmorewifi"
 
-#define WIFI_SSID "Port Labs Guest"
-#define WIFI_PASSWORD "connectandcollab"
+//#define WIFI_SSID "Port Labs Guest"
+//#define WIFI_PASSWORD "connectandcollab"
 
 void setup_modbus_server();
 void loop_modbus_server();
